@@ -110,19 +110,21 @@ struct RegBranch
 end
 
 """
-Register the package at `package_repo` / `tree_spect` in `registry`.
+Register the package at `package_repo` / `tree_spec` in `registry`.
 """
 function register(
-    package_repo::String, pkg::Pkg.Types.Project, tree_hash::String;
+    pkg,
+    version_info;
+    repo::Union{Nothing,String} = nothing,
     registry::String = DEFAULT_REGISTRY,
     push::Bool = false,
     gitconfig::Dict = Dict()
 )
     # get info from package registry
     @debug("get info from package registry")
-    package_repo = GitTools.normalize_url(package_repo)
-    #pkg, tree_hash = get_project(package_repo, tree_spec)
-    branch = "register/$(pkg.name)/v$(pkg.version)"
+    if repo != nothing
+        package_repo = GitTools.normalize_url(repo)
+    end
 
     # get up-to-date clone of registry
     @debug("get up-to-date clone of registry")
@@ -136,6 +138,7 @@ function register(
         # branch registry repo
         @debug("branch registry repo")
         git = gitcmd(registry_path, gitconfig)
+        branch = "register/$(pkg.name)/v$(pkg.version)"
         run(`$git checkout -qf master`)
         run(`$git branch -qf $branch`)
         run(`$git checkout -qf $branch`)
@@ -174,8 +177,14 @@ function register(
         @debug("update package data: package file")
         package_info = filter(((k,v),)->!(v isa Dict), Pkg.Types.destructure(pkg))
         delete!(package_info, "version")
-        package_info["repo"] = package_repo
-        package_file = joinpath(package_path, "Package.toml")
+        if package_repo != nothing
+            package_info["repo"] = package_repo
+        end
+        if pkg <: ArtifactSpec
+            package_file = joinpath(package_path, "Artifact.toml")
+        else
+            package_file = joinpath(package_path, "Package.toml")
+        end
         write_toml(package_file, package_info)
 
         # update package data: versions file
@@ -194,9 +203,7 @@ function register(
             end
         end
 
-        version_info = Dict{String,Any}("git-tree-sha1" => string(tree_hash))
         versions_data[string(pkg.version)] = version_info
-
         vnlist = sort([(VersionNumber(k), v) for (k, v) in versions_data])
         vslist = [(string(k), v) for (k, v) in vnlist]
 
@@ -276,8 +283,10 @@ function register(
 
         UUID: $(pkg.uuid)
         Repo: $(package_repo)
-        Tree: $(string(tree_hash))
         """
+        if haskey(version_info, "tree-hash")
+            message *= "Tree: $(string(tree_hash))\n"
+        end
         run(`$git add -- $package_path`)
         run(`$git commit -qm $message`)
 

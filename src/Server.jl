@@ -800,7 +800,9 @@ function handle_register(rp::RequestParams, target_registry::Dict{String,Any})
     pp = ProcessedParams(rp)
 
     if pp.cparams.isvalid && pp.cparams.error == nothing
-        rbrn = register(pp.cloneurl, Pkg.Types.read_project(copy(IOBuffer(pp.projectfile_contents))), pp.tree_sha;
+        version_info = Dict{String,Any}("git-tree-sha1" => string(pp.tree_sha))
+        project = Pkg.Types.read_project(copy(IOBuffer(pp.projectfile_contents)))
+        rbrn = register(pp.cloneurl, project, version_info;
             registry=target_registry["repo"],
             push=true,
             gitconfig=Dict("user.name"=>config["github"]["user"], "user.email"=>config["github"]["email"]))
