@@ -12,8 +12,11 @@ end
 """
 Return a `GitRepo` object for an up-to-date copy of `registry`.
 """
-function get_registry(registry::String; gitconfig::Dict=Dict())
-    reg_path(args...) = joinpath("registries", map(string, args)...)
+function get_registry(registry::String;
+                      gitconfig::Dict=Dict(),
+                      registries_root::String = pwd(),
+                      force_reset::Bool = true)
+    reg_path(args...) = joinpath(registries_root, "registries", map(string, args)...)
     if haskey(REGISTRIES, registry)
         registry_uuid = REGISTRIES[registry]
         registry_path = reg_path(registry_uuid)
@@ -25,7 +28,9 @@ function get_registry(registry::String; gitconfig::Dict=Dict())
             run(`$git config remote.origin.url $registry`)
             run(`$git checkout -q -f master`)
             run(`$git fetch -q -P origin master`)
-            run(`$git reset -q --hard origin/master`)
+            if force_reset
+                run(`$git reset -q --hard origin/master`)
+            end
         end
     else
         registry_temp = mktempdir(mkpath(reg_path()))
@@ -110,15 +115,19 @@ struct RegBranch
 end
 
 """
-Register the package at `package_repo` / `tree_spec` in `registry`.
+Register the package at `repo` / `tree_spec` in `registry`.
 """
 function register(
-    pkg,
+    pkg::Pkg.Types.Project,
     version_info;
     repo::Union{Nothing,String} = nothing,
     registry::String = DEFAULT_REGISTRY,
+    branch = "register/$(pkg.name)/v$(pkg.version)",
+    registries_root::String = pwd(),
     push::Bool = false,
-    gitconfig::Dict = Dict()
+    force_reset::Bool = true,
+    gitconfig::Dict = Dict(),
+    is_artifact::Bool = false,
 )
     # get info from package registry
     @debug("get info from package registry")
@@ -129,7 +138,8 @@ function register(
     # get up-to-date clone of registry
     @debug("get up-to-date clone of registry")
     registry = GitTools.normalize_url(registry)
-    registry_repo = get_registry(registry; gitconfig=gitconfig)
+    registry_repo = get_registry(registry; registries_root=registries_root,
+                                 gitconfig=gitconfig, force_reset=force_reset)
     registry_path = LibGit2.path(registry_repo)
 
     clean_registry = true
@@ -138,10 +148,11 @@ function register(
         # branch registry repo
         @debug("branch registry repo")
         git = gitcmd(registry_path, gitconfig)
-        branch = "register/$(pkg.name)/v$(pkg.version)"
         run(`$git checkout -qf master`)
-        run(`$git branch -qf $branch`)
-        run(`$git checkout -qf $branch`)
+        if branch != "master"
+            run(`$git branch -qf $branch`)
+            run(`$git checkout -qf $branch`)
+        end
 
         # find package in registry
         @debug("find package in registry")
@@ -171,16 +182,23 @@ function register(
             first_letter = uppercase(pkg.name[1])
             package_path = joinpath(registry_path, "$first_letter", pkg.name)
             mkpath(package_path)
+
+            @debug("Inserting new entry for package in Registry.toml")
+            registry_data["packages"][uuid] = Dict(
+                "name" => pkg.name,
+                "path" => joinpath("$first_letter", pkg.name),
+            )
+            write_toml(registry_file, registry_data)
         end
 
         # update package data: package file
         @debug("update package data: package file")
         package_info = filter(((k,v),)->!(v isa Dict), Pkg.Types.destructure(pkg))
         delete!(package_info, "version")
-        if package_repo != nothing
-            package_info["repo"] = package_repo
+        if repo != nothing
+            package_info["repo"] = repo
         end
-        if pkg <: ArtifactSpec
+        if is_artifact
             package_file = joinpath(package_path, "Artifact.toml")
         else
             package_file = joinpath(package_path, "Package.toml")
@@ -282,17 +300,21 @@ function register(
         New version: $(pkg.name) v$(pkg.version)
 
         UUID: $(pkg.uuid)
-        Repo: $(package_repo)
         """
+        if repo !== nothing
+            message *= "Repo: $(repo)\n"
+        end
         if haskey(version_info, "tree-hash")
             message *= "Tree: $(string(tree_hash))\n"
         end
-        run(`$git add -- $package_path`)
+        run(`$git add -- $package_path Registry.toml`)
         run(`$git commit -qm $message`)
 
         # push -f branch to remote
-        @debug("push -f branch to remote")
-        push && run(`$git push -q -f -u origin $branch`)
+        if push
+            @debug("push -f branch to remote")
+            run(`$git push -q -f -u origin $branch`)
+        end
 
         clean_registry = false
         return RegBranch(pkg.name, pkg.version, branch, nothing)
